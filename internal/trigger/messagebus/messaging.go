@@ -34,7 +34,7 @@ type Trigger struct {
 	Configuration common.ConfigurationStruct
 	Runtime       *runtime.GolangRuntime
 	client        messaging.MessageClient
-	topics        []types.TopicChannel
+	topics        []types.BatchTopicChannel
 	EdgeXClients  common.EdgeXClients
 }
 
@@ -49,10 +49,16 @@ func (trigger *Trigger) Initialize(appWg *sync.WaitGroup, appCtx context.Context
 	if err != nil {
 		return err
 	}
-	trigger.topics = []types.TopicChannel{{Topic: trigger.Configuration.Binding.SubscribeTopic, Messages: make(chan types.MessageEnvelope)}}
+
+	trigger.topics = []types.BatchTopicChannel{{Topic: trigger.Configuration.Binding.SubscribeTopic, Messages: make(chan []types.MessageEnvelope)}}
 	messageErrors := make(chan error)
 
-	trigger.client.Subscribe(trigger.topics, messageErrors)
+	err = trigger.client.Connect()
+	if err != nil {
+		return err
+	}
+
+	trigger.client.SubscribeBatch(trigger.topics, messageErrors)
 	receiveMessage := true
 
 	appWg.Add(1)
@@ -70,10 +76,10 @@ func (trigger *Trigger) Initialize(appWg *sync.WaitGroup, appCtx context.Context
 
 			case msgs := <-trigger.topics[0].Messages:
 				go func() {
-					logger.Trace("Received message from bus", "topic", trigger.Configuration.Binding.SubscribeTopic, clients.CorrelationHeader, msgs.CorrelationID)
+					logger.Trace("Received message from bus", "topic", trigger.Configuration.Binding.SubscribeTopic, clients.CorrelationHeader, msgs[0].CorrelationID)
 
 					edgexContext := &appcontext.Context{
-						CorrelationID:         msgs.CorrelationID,
+						CorrelationID:         msgs[0].CorrelationID,
 						Configuration:         trigger.Configuration,
 						LoggingClient:         trigger.EdgeXClients.LoggingClient,
 						EventClient:           trigger.EdgeXClients.EventClient,
@@ -82,7 +88,7 @@ func (trigger *Trigger) Initialize(appWg *sync.WaitGroup, appCtx context.Context
 						NotificationsClient:   trigger.EdgeXClients.NotificationsClient,
 					}
 
-					messageError := trigger.Runtime.ProcessMessage(edgexContext, msgs)
+					messageError := trigger.Runtime.ProcessMessage(edgexContext, msgs[0])
 					if messageError != nil {
 						// ProcessMessage logs the error, so no need to log it here.
 						return
@@ -99,7 +105,7 @@ func (trigger *Trigger) Initialize(appWg *sync.WaitGroup, appCtx context.Context
 							logger.Error(fmt.Sprintf("Failed to publish Message to bus, %v", err))
 						}
 
-						logger.Trace("Published message to bus", "topic", trigger.Configuration.Binding.PublishTopic, clients.CorrelationHeader, msgs.CorrelationID)
+						logger.Trace("Published message to bus", "topic", trigger.Configuration.Binding.PublishTopic, clients.CorrelationHeader, msgs[0].CorrelationID)
 					}
 				}()
 			}
